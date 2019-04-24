@@ -223,9 +223,9 @@ process BwaMem {
   """
 }
 
-
+merge_bams_ref = fasta_merge_bams.merge(fai_merge_bams, dict_merge_bams)
 bams_to_merge = batch_merge_bams.combine(aligned_bam, by: 0)
-merge_bams = bams_to_merge.merge(fasta_merge_bams, fai_merge_bams, dict_merge_bams)
+merge_bams = bams_to_merge.combine(merge_bams_ref)
 
 /*--------------------------------------------------
   Merge original input uBAM with BWA-aligned BAM
