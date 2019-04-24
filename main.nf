@@ -40,19 +40,19 @@ params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : 
 if (params.fasta) {
     Channel.fromPath(params.fasta)
            .ifEmpty { exit 1, "fasta annotation file not found: ${params.fasta}" }
-           .into { fasta_bwa; fasta_merge_bams }
+           .into { fasta_bwa; fasta_merge_bams; fasta_baserecalibrator }
 }
 params.fai = params.genome ? params.genomes[ params.genome ].fai ?: false : false
 if (params.fai) {
     Channel.fromPath(params.fai)
            .ifEmpty { exit 1, "fai annotation file not found: ${params.fai}" }
-           .set { fai_merge_bams }
+           .into { fai_merge_bams; fai_baserecalibrator }
 }
 params.dict = params.genome ? params.genomes[ params.genome ].dict ?: false : false
 if (params.dict) {
     Channel.fromPath(params.dict)
            .ifEmpty { exit 1, "dict annotation file not found: ${params.dict}" }
-           .set { dict_merge_bams }
+           .into { dict_merge_bams; dict_baserecalibrator }
 }
 params.bwa_index_amb = params.genome ? params.genomes[ params.genome ].bwa_index_amb ?: false : false
 if (params.bwa_index_amb) {
@@ -83,6 +83,88 @@ if (params.bwa_index_sa) {
     Channel.fromPath(params.bwa_index_sa)
            .ifEmpty { exit 1, "bwa_index_sa annotation file not found: ${params.bwa_index_sa}" }
            .set { bwa_index_sa }
+}
+params.dbsnp_gz = params.genome ? params.genomes[ params.genome ].dbsnp_gz ?: false : false
+if (params.dbsnp_gz) {
+    Channel.fromPath(params.dbsnp_gz)
+           .ifEmpty { exit 1, "dbsnp annotation file not found: ${params.dbsnp_gz}" }
+           .set { dbsnp_gz}
+}
+params.dbsnp_idx_gz = params.genome ? params.genomes[ params.genome ].dbsnp_idx_gz ?: false : false
+if (params.dbsnp_idx_gz) {
+    Channel.fromPath(params.dbsnp_idx_gz)
+           .ifEmpty { exit 1, "dbsnp_idx_gz annotation file not found: ${params.dbsnp_idx_gz}" }
+           .set { dbsnp_idx_gz}
+}
+params.golden_indel_gz = params.genome ? params.genomes[ params.genome ].golden_indel_gz ?: false : false
+if (params.golden_indel_gz) {
+    Channel.fromPath(params.golden_indel_gz)
+           .ifEmpty { exit 1, "golden_indel_gz annotation file not found: ${params.golden_indel_gz}" }
+           .set { golden_indel_gz }
+}
+params.golden_indel_idx_gz = params.genome ? params.genomes[ params.genome ].golden_indel_idx_gz ?: false : false
+if (params.golden_indel_idx_gz) {
+    Channel.fromPath(params.golden_indel_idx_gz)
+           .ifEmpty { exit 1, "golden_indel_idx_gz annotation file not found: ${params.golden_indel_idx_gz}" }
+           .set { golden_indel_idx_gz }
+}
+
+/*--------------------------------------------------
+  Gunzip the dbSNP VCF file if gzipped
+---------------------------------------------------*/
+
+process gunzip_dbsnp {
+    tag "$dbsnp_gz"
+
+    input:
+    file dbsnp_gz from dbsnp_gz
+    file dbsnp_idx_gz from dbsnp_idx_gz
+
+    output:
+    file "*.vcf" into dbsnp
+    file "*.vcf.idx" into dbsnp_idx
+
+    script:
+    if ( "${dbsnp_gz}".endsWith(".gz") ) {
+     """
+     gunzip -d --force $dbsnp_gz
+     gunzip -d --force $dbsnp_idx_gz
+     """
+   } else {
+     """
+     cp $dbsnp_gz dbsnp.vcf
+     cp $dbsnp_idx_gz dbsnp.vcf.idx
+     """
+   }
+}
+
+/*--------------------------------------------------
+  Gunzip the golden indel file if gzipped
+---------------------------------------------------*/
+
+process gunzip_golden_indel {
+  tag "$golden_indel_gz"
+
+  input:
+  file golden_indel_gz from golden_indel_gz
+  file golden_indel_idx_gz from golden_indel_idx_gz
+
+  output:
+  file "*.vcf" into golden_indel
+  file "*.vcf.idx" into golden_indel_idx
+
+  script:
+  if ( "${golden_indel_gz}".endsWith(".gz") ) {
+    """
+    gunzip -d --force $golden_indel_gz
+    gunzip -d --force $golden_indel_idx_gz
+    """
+  } else {
+    """
+    cp $golden_indel_gz golden_indel.vcf
+    cp $golden_indel_idx_gz golden_indel.vcf.idx
+    """
+  }
 }
 
 /*--------------------------------------------------
@@ -141,9 +223,9 @@ process BwaMem {
   """
 }
 
-aligned_bam_ref = aligned_bam.merge(fasta_merge_bams, fai_merge_bams, dict_merge_bams)
-batch_merge_bams.combine(aligned_bam_ref, by: 0)
-  .set { merge_bams }
+
+bams_to_merge = batch_merge_bams.combine(aligned_bam, by: 0)
+merge_bams = bams_to_merge.merge(fasta_merge_bams, fai_merge_bams, dict_merge_bams)
 
 /*--------------------------------------------------
   Merge original input uBAM with BWA-aligned BAM
@@ -151,7 +233,6 @@ batch_merge_bams.combine(aligned_bam_ref, by: 0)
 
 process MergeBamAlignment {
   tag "${name}"
-  publishDir "${params.outdir}", mode: 'copy'
 
   container 'broadinstitute/gatk:4.0.4.0'
   memory "8.GB"
@@ -160,7 +241,7 @@ process MergeBamAlignment {
   set val(name), file(unmapped_bam), file(aligned_bam), file(fasta), file(fai), file(dict) from merge_bams
 
   output:
-  file("${name}.merged.bam") into merged_bam
+  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai") into merged_bam
 
   script:
   """
@@ -179,5 +260,38 @@ process MergeBamAlignment {
      --PRIMARY_ALIGNMENT_STRATEGY MostDistant \
      --UNMAPPED_READ_STRATEGY COPY_TO_TAG \
      --ALIGNER_PROPER_PAIR_FLAGS true
+  """
+}
+
+baserecalibrator_ref = fasta_baserecalibrator.merge(fai_baserecalibrator, dict_baserecalibrator, dbsnp, dbsnp_idx, golden_indel, golden_indel_idx)
+baserecalibrator = merged_bam.combine(baserecalibrator_ref)
+
+/*--------------------------------------------------
+  Generate Base Quality Score Recalibration (BQSR) model
+---------------------------------------------------*/
+
+process BaseRecalibrator {
+  tag "${name}"
+
+  container 'broadinstitute/gatk:4.0.4.0'
+  memory "8G"
+
+  input:
+  set val(name), file(bam), file(bai), file(fasta), file(fai), file(dict), file(dbsnp), file(dbsnp_idx), file(golden_indel), file(golden_indel_idx) from baserecalibrator
+
+  output:
+  set val(name), file("${name}.recal_data.table") into baserecalibrator_table
+  
+  script:
+  // TODO: add BED file?
+  """
+  /gatk/gatk --java-options "-Xms4g" \
+      BaseRecalibrator \
+      -R ${fasta} \
+      -I ${bam} \
+      --use-original-qualities \
+      -O ${name}.recal_data.table \
+      --known-sites ${dbsnp} \
+      --known-sites ${golden_indel}
   """
 }
