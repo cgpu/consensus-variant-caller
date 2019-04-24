@@ -40,19 +40,19 @@ params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : 
 if (params.fasta) {
     Channel.fromPath(params.fasta)
            .ifEmpty { exit 1, "fasta annotation file not found: ${params.fasta}" }
-           .into { fasta_bwa; fasta_merge_bams; fasta_baserecalibrator }
+           .into { fasta_bwa; fasta_ref }
 }
 params.fai = params.genome ? params.genomes[ params.genome ].fai ?: false : false
 if (params.fai) {
     Channel.fromPath(params.fai)
            .ifEmpty { exit 1, "fai annotation file not found: ${params.fai}" }
-           .into { fai_merge_bams; fai_baserecalibrator }
+           .set { fai_ref }
 }
 params.dict = params.genome ? params.genomes[ params.genome ].dict ?: false : false
 if (params.dict) {
     Channel.fromPath(params.dict)
            .ifEmpty { exit 1, "dict annotation file not found: ${params.dict}" }
-           .into { dict_merge_bams; dict_baserecalibrator }
+           .set { dict_ref }
 }
 params.bwa_index_amb = params.genome ? params.genomes[ params.genome ].bwa_index_amb ?: false : false
 if (params.bwa_index_amb) {
@@ -108,6 +108,9 @@ if (params.golden_indel_idx_gz) {
            .ifEmpty { exit 1, "golden_indel_idx_gz annotation file not found: ${params.golden_indel_idx_gz}" }
            .set { golden_indel_idx_gz }
 }
+
+fasta_ref.merge(fai_ref, dict_ref)
+  .into { merge_bams_ref; baserecalibrator_ref; applybqsr_ref}
 
 /*--------------------------------------------------
   Gunzip the dbSNP VCF file if gzipped
@@ -223,7 +226,6 @@ process BwaMem {
   """
 }
 
-merge_bams_ref = fasta_merge_bams.merge(fai_merge_bams, dict_merge_bams)
 bams_to_merge = batch_merge_bams.combine(aligned_bam, by: 0)
 merge_bams = bams_to_merge.combine(merge_bams_ref)
 
@@ -241,7 +243,7 @@ process MergeBamAlignment {
   set val(name), file(unmapped_bam), file(aligned_bam), file(fasta), file(fai), file(dict) from merge_bams
 
   output:
-  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai") into merged_bam
+  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai") into merged_bam, merged_bam_applybqsr
 
   script:
   """
@@ -263,7 +265,7 @@ process MergeBamAlignment {
   """
 }
 
-baserecalibrator_ref = fasta_baserecalibrator.merge(fai_baserecalibrator, dict_baserecalibrator, dbsnp, dbsnp_idx, golden_indel, golden_indel_idx)
+baserecalibrator_ref = baserecalibrator_ref.merge(dbsnp, dbsnp_idx, golden_indel, golden_indel_idx)
 baserecalibrator = merged_bam.combine(baserecalibrator_ref)
 
 /*--------------------------------------------------
@@ -293,5 +295,37 @@ process BaseRecalibrator {
       -O ${name}.recal_data.table \
       --known-sites ${dbsnp} \
       --known-sites ${golden_indel}
+  """
+}
+
+applybqsr_bam_table = merged_bam_applybqsr.combine(baserecalibrator_table, by: 0)
+applybqsr = applybqsr_bam_table.combine(applybqsr_ref)
+
+/*--------------------------------------------------
+  Apply Base Quality Score Recalibration (BQSR) model
+---------------------------------------------------*/
+
+process ApplyBQSR {
+  tag "${name}"
+
+  container 'broadinstitute/gatk:4.0.4.0'
+  memory "8G"
+
+  input:
+  set val(name), file(bam), file(bai), file(recalibration_table), file(fasta), file(fai), file(dict) from applybqsr
+
+
+  output:
+  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai") into recalibrated_bams
+  
+  script:
+  // TODO: add BED file?
+  """
+  /gatk/gatk --java-options "-Xms3000m" \
+      ApplyBQSR \
+      -bqsr ${recalibration_table} \
+      -I ${bam} \
+      -O ${name}.recal.bam \
+      -R ${fasta}
   """
 }
