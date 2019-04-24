@@ -108,6 +108,9 @@ if (params.golden_indel_idx_gz) {
            .ifEmpty { exit 1, "golden_indel_idx_gz annotation file not found: ${params.golden_indel_idx_gz}" }
            .set { golden_indel_idx_gz }
 }
+Channel.fromPath(params.annotation)
+    .ifEmpty { exit 1, "Annotation folder not found: ${params.annotation}" }
+    .set { annotation }
 
 fasta_ref.merge(fai_ref, dict_ref)
   .into { merge_bams_ref; baserecalibrator_ref; applybqsr_ref; haplotypecaller_ref; bcftools_ref}
@@ -389,5 +392,46 @@ process bcftoolsMpileup {
       --no-BAQ \
       ${bam} | bcftools call -Ov -mv \
           -o ${name}.SAM.vcf
+  """
+}
+
+vcfs = haplotypecaller_vcf.combine(bcftools_vcf, by: 0)
+annovar_consensus = vcfs.combine(annotation)
+
+/*--------------------------------------------------
+  annotate with annovar
+---------------------------------------------------*/
+
+process annovarConsensus {
+  tag "${name}"
+  publishDir "${params.outdir}", mode: 'copy'
+  
+  container "bioinfochrustrasbourg/annovar:2018Apr16"
+  memory "4.GB"
+
+  input:
+  set val(name), file(gatk_vcf), file(gatk_vcf_index), file(sam_vcf), file(annotation) from annovar_consensus
+
+  output:
+  set file("${name}.GATK.${params.ref_name}_multianno.vcf"), file("${name}.GATK.${params.ref_name}_multianno.txt"),
+    file("${name}.SAM.${params.ref_name}_multianno.vcf"), file("${name}.SAM.${params.ref_name}_multianno.txt") into annotated_results
+
+  script:
+  """
+  table_annovar.pl ${gatk_vcf} ${annotation} \
+    -buildver ${params.ref_name} \
+    -outfile ${name}.GATK \
+    -remove \
+    -protocol ${params.annovar_protocols} \
+    -operation ${params.annovar_operation} \
+    -nastring . -vcfinput
+
+  table_annovar.pl ${sam_vcf} ${annotation} \
+    -buildver ${params.ref_name} \
+    -outfile ${name}.SAM \
+    -remove \
+    -protocol ${params.annovar_protocols} \
+    -operation ${params.annovar_operation} \
+    -nastring . -vcfinput
   """
 }
