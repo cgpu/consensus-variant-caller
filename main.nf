@@ -358,3 +358,36 @@ process HaplotypeCaller {
       -O ${name}.GATK.vcf 
   """
 }
+
+bcftools = recalibrated_bams_bcftools.combine(bcftools_ref)
+
+/*--------------------------------------------------
+  bcftools Mpileup variant calling
+---------------------------------------------------*/
+
+process bcftoolsMpileup {
+  tag "${name}"
+  
+  container "quay.io/biocontainers/bcftools:1.9--h4da6232_0"
+  memory "14.GB"
+  cpus 4
+
+  input:
+  set val(name), file(bam), file(bai), file(fasta), file(fai), file(dict) from bcftools
+
+  output:
+  set val(name), file("${name}.SAM.vcf") into bcftools_vcf
+
+  script:
+  """
+  bcftools mpileup \
+      --max-depth 10000 \
+      --max-idepth 10000 \
+      --annotate "FORMAT/AD,FORMAT/DP" \
+      --fasta-ref ${fasta} \
+      --ignore-RG \
+      --no-BAQ \
+      ${bam} | bcftools call -Ov -mv \
+          -o ${name}.SAM.vcf
+  """
+}
