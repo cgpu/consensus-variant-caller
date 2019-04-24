@@ -110,7 +110,7 @@ if (params.golden_indel_idx_gz) {
 }
 
 fasta_ref.merge(fai_ref, dict_ref)
-  .into { merge_bams_ref; baserecalibrator_ref; applybqsr_ref}
+  .into { merge_bams_ref; baserecalibrator_ref; applybqsr_ref; haplotypecaller_ref; bcftools_ref}
 
 /*--------------------------------------------------
   Gunzip the dbSNP VCF file if gzipped
@@ -314,9 +314,8 @@ process ApplyBQSR {
   input:
   set val(name), file(bam), file(bai), file(recalibration_table), file(fasta), file(fai), file(dict) from applybqsr
 
-
   output:
-  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai") into recalibrated_bams
+  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai") into recalibrated_bams, recalibrated_bams_bcftools
   
   script:
   // TODO: add BED file?
@@ -327,5 +326,35 @@ process ApplyBQSR {
       -I ${bam} \
       -O ${name}.recal.bam \
       -R ${fasta}
+  """
+}
+
+haplotypecaller = recalibrated_bams.combine(haplotypecaller_ref)
+
+/*--------------------------------------------------
+  HaplotypeCaller per-sample
+---------------------------------------------------*/
+
+process HaplotypeCaller {
+  tag "${name}"
+
+  container 'broadinstitute/gatk:4.0.4.0'
+  memory "14.GB"
+  cpus 4
+
+  input:
+  set val(name), file(bam), file(bai), file(fasta), file(fai), file(dict) from haplotypecaller
+
+  output:
+  set val(name), file("${name}.GATK.vcf"), file("${name}.GATK.vcf.idx") into haplotypecaller_vcf
+
+  script:
+  // TODO: add BED, intervals & dbSNP?
+  """
+  /gatk/gatk --java-options "-Xmx4g" \
+      HaplotypeCaller \
+      -R ${fasta} \
+      -I ${bam} \
+      -O ${name}.GATK.vcf 
   """
 }
