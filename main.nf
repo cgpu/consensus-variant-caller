@@ -213,7 +213,7 @@ process fastqc {
     tag "$name"
     publishDir "${params.outdir}/fastqc", mode: 'copy',
         saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
-    container 'lifebitai/fastqc'
+    container 'compbio/ngseasy-fastqc:v1.0-r002'
 
     input:
     set val(name), file(reads) from reads_fastqc
