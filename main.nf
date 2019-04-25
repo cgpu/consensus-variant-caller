@@ -122,6 +122,8 @@ fasta_ref.merge(fai_ref, dict_ref)
 process gunzipDbsnp {
     tag "$dbsnp_gz"
 
+    container 'broadinstitute/genomes-in-the-cloud:2.3.1-1512499786'
+
     input:
     file dbsnp_gz from dbsnp_gz
     file dbsnp_idx_gz from dbsnp_idx_gz
@@ -150,6 +152,8 @@ process gunzipDbsnp {
 
 process gunzipGoldenIndel {
   tag "$golden_indel_gz"
+
+  container 'broadinstitute/genomes-in-the-cloud:2.3.1-1512499786'
 
   input:
   file golden_indel_gz from golden_indel_gz
