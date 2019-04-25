@@ -119,7 +119,7 @@ fasta_ref.merge(fai_ref, dict_ref)
   Gunzip the dbSNP VCF file if gzipped
 ---------------------------------------------------*/
 
-process gunzip_dbsnp {
+process gunzipDbsnp {
     tag "$dbsnp_gz"
 
     input:
@@ -148,7 +148,7 @@ process gunzip_dbsnp {
   Gunzip the golden indel file if gzipped
 ---------------------------------------------------*/
 
-process gunzip_golden_indel {
+process gunzipGoldenIndel {
   tag "$golden_indel_gz"
 
   input:
@@ -177,7 +177,7 @@ process gunzip_golden_indel {
   Read unmapped BAM, convert to FASTQ
 ---------------------------------------------------*/
 
-process SamToFastq {
+process samToFastq {
   tag "${name}"
 
   container 'broadinstitute/genomes-in-the-cloud:2.3.1-1512499786'
@@ -188,7 +188,7 @@ process SamToFastq {
   set val(name), file(bam) from batch_sam_to_fastq
 
   output:
-  set val(name), file("${name}.fastq") into reads
+  set val(name), file("${name}.fastq") into reads, reads_fastqc
 
   script:
   """
@@ -201,6 +201,30 @@ process SamToFastq {
   """
 }
 
+/*--------------------------------------------------
+  Use FASTQC for FASTQ quality control
+---------------------------------------------------*/
+
+process fastqc {
+    tag "$name"
+    publishDir "${params.outdir}/fastqc", mode: 'copy',
+        saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
+    container 'lifebitai/fastqc'
+
+    input:
+    set val(name), file(reads) from reads_fastqc
+
+    output:
+    file "*_fastqc.{zip,html}" into fastqc_results
+
+    when: !params.skip_multiqc
+
+    script:
+    """
+    fastqc -q $reads
+    """
+}
+
 bwa_index = fasta_bwa.merge(bwa_index_amb,bwa_index_ann, bwa_index_bwt, bwa_index_pac, bwa_index_sa)
 bwa = reads.combine(bwa_index)
 
@@ -208,7 +232,7 @@ bwa = reads.combine(bwa_index)
   Align reads to reference genome
 ---------------------------------------------------*/
 
-process BwaMem {
+process bwaMem {
   tag "${name}"
 
   container 'broadinstitute/genomes-in-the-cloud:2.3.1-1512499786'
@@ -236,7 +260,7 @@ merge_bams = bams_to_merge.combine(merge_bams_ref)
   Merge original input uBAM with BWA-aligned BAM
 ---------------------------------------------------*/
 
-process MergeBamAlignment {
+process mergeBamAlignment {
   tag "${name}"
 
   container 'broadinstitute/gatk:4.0.4.0'
@@ -246,7 +270,7 @@ process MergeBamAlignment {
   set val(name), file(unmapped_bam), file(aligned_bam), file(fasta), file(fai), file(dict) from merge_bams
 
   output:
-  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai") into merged_bam, merged_bam_applybqsr
+  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai") into merged_bam, merged_bam_applybqsr, merged_bam_qc
 
   script:
   """
@@ -268,6 +292,37 @@ process MergeBamAlignment {
   """
 }
 
+/*--------------------------------------------------
+  Run BAM QC using Qualimap before recalibration
+---------------------------------------------------*/
+
+process runBamQCmapped {
+    tag "$bam"
+    container 'maxulysse/sarek:latest'
+
+    input:
+    set val(name), file(bam), file(index) from merged_bam_qc
+
+    output:
+    file("${name}_mapped") into bamqc_mapped_report
+
+    when: !params.skip_multiqc
+
+    script:
+    """
+    qualimap \
+      bamqc \
+      -bam ${bam} \
+      --paint-chromosome-limits \
+      --genome-gc-distr HUMAN \
+      -nt ${task.cpus} \
+      -skip-duplicated \
+      --skip-dup-mode 0 \
+      -outdir ${name}_mapped \
+      -outformat HTML
+    """
+}
+
 baserecalibrator_ref = baserecalibrator_ref.merge(dbsnp, dbsnp_idx, golden_indel, golden_indel_idx)
 baserecalibrator = merged_bam.combine(baserecalibrator_ref)
 
@@ -275,7 +330,7 @@ baserecalibrator = merged_bam.combine(baserecalibrator_ref)
   Generate Base Quality Score Recalibration (BQSR) model
 ---------------------------------------------------*/
 
-process BaseRecalibrator {
+process baseRecalibrator {
   tag "${name}"
 
   container 'broadinstitute/gatk:4.0.4.0'
@@ -308,7 +363,7 @@ applybqsr = applybqsr_bam_table.combine(applybqsr_ref)
   Apply Base Quality Score Recalibration (BQSR) model
 ---------------------------------------------------*/
 
-process ApplyBQSR {
+process applyBQSR {
   tag "${name}"
 
   container 'broadinstitute/gatk:4.0.4.0'
@@ -318,7 +373,7 @@ process ApplyBQSR {
   set val(name), file(bam), file(bai), file(recalibration_table), file(fasta), file(fai), file(dict) from applybqsr
 
   output:
-  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai") into recalibrated_bams, recalibrated_bams_bcftools
+  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai") into recalibrated_bams, recalibrated_bams_bcftools, recalibrated_bams_qc
   
   script:
   // TODO: add BED file?
@@ -332,13 +387,44 @@ process ApplyBQSR {
   """
 }
 
+/*--------------------------------------------------
+  Run BAM QC using Qualimap after recalibration
+---------------------------------------------------*/
+
+process runBamQCrecalibrated {
+    tag "$bam"
+    container 'maxulysse/sarek:latest'
+
+    input:
+    set val(name), file(bam), file(index) from recalibrated_bams_qc
+
+    output:
+    file("${name}_recalibrated") into bamqc_recalibrated_report
+
+    when: !params.skip_multiqc
+
+    script:
+    """
+    qualimap \
+      bamqc \
+      -bam ${bam} \
+      --paint-chromosome-limits \
+      --genome-gc-distr HUMAN \
+      -nt ${task.cpus} \
+      -skip-duplicated \
+      --skip-dup-mode 0 \
+      -outdir ${name}_recalibrated \
+      -outformat HTML
+    """
+}
+
 haplotypecaller = recalibrated_bams.combine(haplotypecaller_ref)
 
 /*--------------------------------------------------
   HaplotypeCaller per-sample
 ---------------------------------------------------*/
 
-process HaplotypeCaller {
+process haplotypeCaller {
   tag "${name}"
 
   container 'broadinstitute/gatk:4.0.4.0'
@@ -404,7 +490,7 @@ annovar_consensus = vcfs.combine(annotation)
 
 process annovarConsensus {
   tag "${name}"
-  publishDir "${params.outdir}", mode: 'copy'
+  publishDir "${params.outdir}/annotation", mode: 'copy'
   
   container "bioinfochrustrasbourg/annovar:2018Apr16"
   memory "4.GB"
@@ -433,5 +519,56 @@ process annovarConsensus {
     -protocol ${params.annovar_protocols} \
     -operation ${params.annovar_operation} \
     -nastring . -vcfinput
+  """
+}
+
+/*--------------------------------------------------
+  bcftools stats to get summary statistics for VCFs
+---------------------------------------------------*/
+
+process bcftoolsStats {
+  tag "${name}"
+  
+  container "quay.io/biocontainers/bcftools:1.9--h4da6232_0"
+
+  input:
+  set file(gatk_vcf), file(gatk), file(sam_vcf), file(sam) from annotated_results
+
+  output:
+  set file("bcfstats_${gatk_vcf}.txt"), file("bcfstats_${sam_vcf}.txt") into bcftools_stats
+
+  when: !params.skip_multiqc
+
+  script:
+  """
+  bcftools stats $gatk_vcf > bcfstats_${gatk_vcf}.txt
+  bcftools stats $sam_vcf > bcfstats_${sam_vcf}.txt
+  """
+}
+
+/*--------------------------------------------------
+  Make output report using MultiQC
+---------------------------------------------------*/
+
+process multiqc {
+  tag "multiqc_report.html"
+
+  publishDir "${params.outdir}/MultiQC", mode: 'copy'
+  container 'ewels/multiqc:v1.7'
+
+  input:
+  file fastqc from fastqc_results.collect()
+  file bamqc_mapped from bamqc_mapped_report.collect()
+  file bamqc_recalibrated from bamqc_recalibrated_report.collect()
+  file bcftools_stats from bcftools_stats.collect()
+
+  output:
+  file("*") into viz
+
+  when: !params.skip_multiqc
+
+  script:
+  """
+  multiqc . -m fastqc -m qualimap -m bcftools 
   """
 }
