@@ -430,7 +430,8 @@ haplotypecaller = recalibrated_bams.combine(haplotypecaller_ref)
 
 process haplotypeCaller {
   tag "${name}"
-
+  publishDir "${params.outdir}/haplotypeCaller", mode: 'copy'
+  
   container 'broadinstitute/gatk:4.0.4.0'
   memory "14.GB"
   cpus 4
@@ -460,6 +461,7 @@ bcftools = recalibrated_bams_bcftools.combine(bcftools_ref)
 
 process bcftoolsMpileup {
   tag "${name}"
+  publishDir "${params.outdir}/bcftoolsMpileup", mode: 'copy'
   
   container "quay.io/biocontainers/bcftools:1.9--h4da6232_0"
   memory "14.GB"
@@ -495,7 +497,7 @@ annovar_consensus = vcfs.combine(annotation)
 process annovarConsensus {
   tag "${name}"
   publishDir "${params.outdir}/annotation", mode: 'copy'
-  
+
   container "bioinfochrustrasbourg/annovar:2018Apr16"
   memory "4.GB"
 
@@ -503,14 +505,16 @@ process annovarConsensus {
   set val(name), file(gatk_vcf), file(gatk_vcf_index), file(sam_vcf), file(annotation) from annovar_consensus
 
   output:
-  set file("${name}.GATK.${params.ref_name}_multianno.vcf"), file("${name}.GATK.${params.ref_name}_multianno.txt"),
-    file("${name}.SAM.${params.ref_name}_multianno.vcf"), file("${name}.SAM.${params.ref_name}_multianno.txt") into annotated_results
+  set file("${name}/${name}.GATK.${params.ref_name}_multianno.vcf"), file("${name}/${name}.GATK.${params.ref_name}_multianno.txt"),
+    file("${name}/${name}.SAM.${params.ref_name}_multianno.vcf"), file("${name}/${name}.SAM.${params.ref_name}_multianno.txt") into annotated_results
 
   script:
   """
+  mkdir ${name}
+
   table_annovar.pl ${gatk_vcf} ${annotation} \
     -buildver ${params.ref_name} \
-    -outfile ${name}.GATK \
+    -outfile ${name}/${name}.GATK \
     -remove \
     -protocol ${params.annovar_protocols} \
     -operation ${params.annovar_operation} \
@@ -518,7 +522,7 @@ process annovarConsensus {
 
   table_annovar.pl ${sam_vcf} ${annotation} \
     -buildver ${params.ref_name} \
-    -outfile ${name}.SAM \
+    -outfile ${name}/${name}.SAM \
     -remove \
     -protocol ${params.annovar_protocols} \
     -operation ${params.annovar_operation} \
