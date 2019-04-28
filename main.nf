@@ -266,7 +266,6 @@ merge_bams = bams_to_merge.combine(merge_bams_ref)
 
 process mergeBamAlignment {
   tag "${name}"
-  publishDir "${params.outdir}/mergeBamAlignment", mode: 'copy'
 
   container 'broadinstitute/gatk:4.0.4.0'
   memory "8.GB"
@@ -370,6 +369,7 @@ applybqsr = applybqsr_bam_table.combine(applybqsr_ref)
 
 process applyBQSR {
   tag "${name}"
+  publishDir "${params.outdir}/applyBQSR", mode: 'copy'
 
   container 'broadinstitute/gatk:4.0.4.0'
   memory "8G"
