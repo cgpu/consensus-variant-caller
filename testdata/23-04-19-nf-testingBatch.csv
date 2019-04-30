@@ -1,3 +1,3 @@
 omics_sample_name,bam_location,bed_location,molecular_id
-sample1,s3://lifebit-featured-datasets/pipelines/consensus-variant-caller/ubam_NA12878/HK3T5.7.NA12878.interval.filtered.query.sorted.unmapped.bam,s3://lifebit-featured-datasets/pipelines/consensus-variant-caller/bed/hg19WholeGenome.bed,1
-sample2,s3://lifebit-featured-datasets/pipelines/consensus-variant-caller/ubam_NA12878/HK3T5.8.NA12878.interval.filtered.query.sorted.unmapped.bam,s3://lifebit-featured-datasets/pipelines/consensus-variant-caller/bed/hg19WholeGenome.bed,2
+sample1,s3://lifebit-featured-datasets/pipelines/consensus-variant-caller/ubam_NA12878/HK3T5.7.NA12878.interval.filtered.query.sorted.unmapped.bam,s3://lifebit-featured-datasets/pipelines/DeepVariant/quick_test/test_nist.b37_chr20_100kbp_at_10mb.bed,1
+sample2,s3://lifebit-featured-datasets/pipelines/consensus-variant-caller/ubam_NA12878/HK3T5.8.NA12878.interval.filtered.query.sorted.unmapped.bam,s3://lifebit-featured-datasets/pipelines/DeepVariant/quick_test/test_nist.b37_chr20_100kbp_at_10mb.bed,2

@@ -31,10 +31,10 @@
 Channel.fromPath(params.batch)
     .ifEmpty { exit 1, "Batch CSV file not found: ${params.batch}" }
     .splitCsv(skip: 1)
-    .map { omics_sample_name, bam_location, bed_location, molecular_id -> [omics_sample_name, file(bam_location).baseName, file(bam_location), file(bed_location), molecular_id] }
-    .set { batch }
+    .map { omics_sample_name, bam_location, bed_location, molecular_id -> [omics_sample_name, file(bam_location).baseName, file(bam_location), file(bed_location).baseName, file(bed_location), molecular_id] }
+    .into { batch; batch_bam_bed }
 batch
-    .map { omics_sample_name, name, bam, bed_location, molecular_id -> [name, bam] }
+    .map { omics_sample_name, name, bam, bed_name, bed, molecular_id -> [name, bed_name, bam] }
     .into { batch_sam_to_fastq; batch_merge_bams }
 params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
 if (params.fasta) {
@@ -52,7 +52,7 @@ params.dict = params.genome ? params.genomes[ params.genome ].dict ?: false : fa
 if (params.dict) {
     Channel.fromPath(params.dict)
            .ifEmpty { exit 1, "dict annotation file not found: ${params.dict}" }
-           .set { dict_ref }
+           .into { dict_bed_to_interval; dict_ref }
 }
 params.bwa_index_amb = params.genome ? params.genomes[ params.genome ].bwa_index_amb ?: false : false
 if (params.bwa_index_amb) {
@@ -114,6 +114,60 @@ Channel.fromPath(params.annotation)
 
 fasta_ref.merge(fai_ref, dict_ref)
   .into { merge_bams_ref; baserecalibrator_ref; applybqsr_ref; haplotypecaller_ref; bcftools_ref}
+
+batch_bam_bed
+  .map { omics_sample_name, name, bame, bed_name, bed, molecular_id -> [bed_name, bed] }
+  .distinct()
+  .set { sort_bed }
+
+/*--------------------------------------------------
+  Sort bed file
+---------------------------------------------------*/
+
+process sortBed {
+  tag "${name}"
+
+  container 'broadinstitute/genomes-in-the-cloud:2.3.1-1512499786'
+
+  input:
+  set val(name), file(bed) from sort_bed
+
+  output:
+  set val(name), file("intervals-sorted.bed") into sorted_bed
+
+  script:
+  """
+  sort -k1,1V -k2,2n -k3,3n ${bed} > intervals-sorted.bed
+  """
+}
+
+bed_to_interval = sorted_bed.combine(dict_bed_to_interval)
+
+/*--------------------------------------------------
+  Transform bed file to intervals list with Picard
+---------------------------------------------------*/
+
+process bedToIntervalList {
+  tag "${name}"
+  container 'broadinstitute/genomes-in-the-cloud:2.3.1-1512499786'
+
+  memory "4.GB"
+
+  input:
+  set val(name), file(bed), file(dict) from bed_to_interval
+
+  output:
+  set file("regions.interval_list"), val(name) into intervals
+
+  script:
+  """
+  java -Dsamjdk.compression_level=5 -Xms4g -jar /usr/gitc/picard.jar \
+      BedToIntervalList \
+      I=${bed} \
+      O=regions.interval_list \
+      SD=${dict}
+  """
+}
 
 /*--------------------------------------------------
   Gunzip the dbSNP VCF file if gzipped
@@ -189,10 +243,10 @@ process samToFastq {
   cpus 4
 
   input:
-  set val(name), file(bam) from batch_sam_to_fastq
+  set val(name), val(bed_name), file(bam) from batch_sam_to_fastq
 
   output:
-  set val(name), file("${name}.fastq") into reads, reads_fastqc
+  set val(name), val(bed_name), file("${name}.fastq") into reads, reads_fastqc
 
   script:
   """
@@ -216,7 +270,7 @@ process fastqc {
     container 'flowcraft/fastqc:0.11.7-1'
 
     input:
-    set val(name), file(reads) from reads_fastqc
+    set val(name), val(bed_name), file(reads) from reads_fastqc
 
     output:
     file "*_fastqc.{zip,html}" into fastqc_results
@@ -244,7 +298,7 @@ process bwaMem {
   cpus 4
 
   input:
-  set val(name), file(reads), file(fasta), file(amb), file(ann), file(bwt), file(pac), file(sa) from bwa
+  set val(name), val(bed_name), file(reads), file(fasta), file(amb), file(ann), file(bwt), file(pac), file(sa) from bwa
 
   output:
   set val(name), file("${name}.aligned.bam") into aligned_bam
@@ -258,7 +312,14 @@ process bwaMem {
 }
 
 bams_to_merge = batch_merge_bams.combine(aligned_bam, by: 0)
-merge_bams = bams_to_merge.combine(merge_bams_ref)
+merge_bams_no_intervals = bams_to_merge.combine(merge_bams_ref)
+
+merge_bams = merge_bams_no_intervals
+  .combine(intervals, by: 1)
+  .map {
+    bed_name, name, unmapped_bam, aligned_bam, fasta, fai, dict, intervals ->
+    [name, unmapped_bam, aligned_bam, fasta, fai, dict, intervals]
+  }
 
 /*--------------------------------------------------
   Merge original input uBAM with BWA-aligned BAM
@@ -271,10 +332,10 @@ process mergeBamAlignment {
   memory "8.GB"
 
   input:
-  set val(name), file(unmapped_bam), file(aligned_bam), file(fasta), file(fai), file(dict) from merge_bams
+  set val(name), file(unmapped_bam), file(aligned_bam), file(fasta), file(fai), file(dict), file(intervals) from merge_bams
 
   output:
-  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai") into merged_bam, merged_bam_applybqsr, merged_bam_qc
+  set val(name), file("${name}.merged.bam"), file("${name}.merged.bai"), file(intervals) into merged_bam, merged_bam_applybqsr, merged_bam_qc
 
   script:
   """
@@ -305,7 +366,7 @@ process runBamQCmapped {
     container 'maxulysse/sarek:latest'
 
     input:
-    set val(name), file(bam), file(index) from merged_bam_qc
+    set val(name), file(bam), file(index), file(intervals) from merged_bam_qc
 
     output:
     file("${name}_mapped") into bamqc_mapped_report
@@ -341,7 +402,7 @@ process baseRecalibrator {
   memory "8G"
 
   input:
-  set val(name), file(bam), file(bai), file(fasta), file(fai), file(dict), file(dbsnp), file(dbsnp_idx), file(golden_indel), file(golden_indel_idx) from baserecalibrator
+  set val(name), file(bam), file(bai), file(intervals), file(fasta), file(fai), file(dict), file(dbsnp), file(dbsnp_idx), file(golden_indel), file(golden_indel_idx) from baserecalibrator
 
   output:
   set val(name), file("${name}.recal_data.table") into baserecalibrator_table
@@ -356,7 +417,9 @@ process baseRecalibrator {
       --use-original-qualities \
       -O ${name}.recal_data.table \
       --known-sites ${dbsnp} \
-      --known-sites ${golden_indel}
+      --known-sites ${golden_indel} \
+      --intervals ${intervals} \
+      --interval-padding 100
   """
 }
 
@@ -375,10 +438,10 @@ process applyBQSR {
   memory "8G"
 
   input:
-  set val(name), file(bam), file(bai), file(recalibration_table), file(fasta), file(fai), file(dict) from applybqsr
+  set val(name), file(bam), file(bai), file(intervals), file(recalibration_table), file(fasta), file(fai), file(dict) from applybqsr
 
   output:
-  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai") into recalibrated_bams, recalibrated_bams_bcftools, recalibrated_bams_qc
+  set val(name), file("${name}.recal.bam"), file("${name}.recal.bai"), file(intervals) into recalibrated_bams, recalibrated_bams_bcftools, recalibrated_bams_qc
   
   script:
   // TODO: add BED file?
@@ -388,7 +451,9 @@ process applyBQSR {
       -bqsr ${recalibration_table} \
       -I ${bam} \
       -O ${name}.recal.bam \
-      -R ${fasta}
+      -R ${fasta} \
+      --intervals ${intervals} \
+      --interval-padding 100  
   """
 }
 
@@ -401,7 +466,7 @@ process runBamQCrecalibrated {
     container 'maxulysse/sarek:latest'
 
     input:
-    set val(name), file(bam), file(index) from recalibrated_bams_qc
+    set val(name), file(bam), file(index), file(intervals) from recalibrated_bams_qc
 
     output:
     file("${name}_recalibrated") into bamqc_recalibrated_report
@@ -438,7 +503,7 @@ process haplotypeCaller {
   cpus 4
 
   input:
-  set val(name), file(bam), file(bai), file(fasta), file(fai), file(dict) from haplotypecaller
+  set val(name), file(bam), file(bai), file(intervals), file(fasta), file(fai), file(dict) from haplotypecaller
 
   output:
   set val(name), file("${name}.GATK.vcf"), file("${name}.GATK.vcf.idx") into haplotypecaller_vcf
@@ -450,7 +515,9 @@ process haplotypeCaller {
       HaplotypeCaller \
       -R ${fasta} \
       -I ${bam} \
-      -O ${name}.GATK.vcf 
+      -O ${name}.GATK.vcf \
+      --intervals ${intervals} \
+      --interval-padding 100
   """
 }
 
@@ -469,7 +536,7 @@ process bcftoolsMpileup {
   cpus 4
 
   input:
-  set val(name), file(bam), file(bai), file(fasta), file(fai), file(dict) from bcftools
+  set val(name), file(bam), file(bai), file(intervals), file(fasta), file(fai), file(dict)from bcftools
 
   output:
   set val(name), file("${name}.SAM.vcf") into bcftools_vcf
