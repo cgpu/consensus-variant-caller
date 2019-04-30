@@ -31,10 +31,10 @@
 Channel.fromPath(params.batch)
     .ifEmpty { exit 1, "Batch CSV file not found: ${params.batch}" }
     .splitCsv(skip: 1)
-    .map { molecular_id, omics_sample_name, dir, key -> [file(key).baseName, file(key), molecular_id, omics_sample_name, dir] }
+    .map { omics_sample_name, bam_location, bed_location, molecular_id -> [omics_sample_name, file(bam_location).baseName, file(bam_location), file(bed_location), molecular_id] }
     .set { batch }
 batch
-    .map { name, bam, molecular_id, omics_sample_name, dir -> [name, bam] }
+    .map { omics_sample_name, name, bam, bed_location, molecular_id -> [name, bam] }
     .into { batch_sam_to_fastq; batch_merge_bams }
 params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
 if (params.fasta) {
