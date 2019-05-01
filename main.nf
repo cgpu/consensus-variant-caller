@@ -32,7 +32,7 @@ Channel.fromPath(params.batch)
     .ifEmpty { exit 1, "Batch CSV file not found: ${params.batch}" }
     .splitCsv(skip: 1)
     .map { omics_sample_name, bam_location, bed_location, molecular_id -> [omics_sample_name, file(bam_location).baseName, file(bam_location), file(bed_location).baseName, file(bed_location), molecular_id] }
-    .into { batch; batch_bam_bed }
+    .into { batch; batch_bam_bed; batch_bcftools }
 batch
     .map { omics_sample_name, name, bam, bed_name, bed, molecular_id -> [name, bed_name, bam] }
     .into { batch_sam_to_fastq; batch_merge_bams }
@@ -133,7 +133,7 @@ process sortBed {
   set val(name), file(bed) from sort_bed
 
   output:
-  set val(name), file("intervals-sorted.bed") into sorted_bed
+  set val(name), file("intervals-sorted.bed") into sorted_bed, sorted_bed_bcftools
 
   script:
   """
@@ -521,7 +521,12 @@ process haplotypeCaller {
   """
 }
 
-bcftools = recalibrated_bams_bcftools.combine(bcftools_ref)
+bcftools_no_bed = recalibrated_bams_bcftools.combine(bcftools_ref)
+// add the bed file to the bcftools channel, needed to use the original mapping info from the input batch csv file
+bed_bam_names = batch_bcftools.map { omics_sample_name, name, bame, bed_name, bed, molecular_id -> [bed_name, name] }
+bed_bam = sorted_bed_bcftools.combine(bed_bam_names, by: 0)
+name_bed = bed_bam.map { bed_name, bed, name -> [name, bed] }
+bcftools = bcftools_no_bed.combine(name_bed, by: 0)
 
 /*--------------------------------------------------
   bcftools Mpileup variant calling
@@ -536,7 +541,7 @@ process bcftoolsMpileup {
   cpus 4
 
   input:
-  set val(name), file(bam), file(bai), file(intervals), file(fasta), file(fai), file(dict)from bcftools
+  set val(name), file(bam), file(bai), file(intervals), file(fasta), file(fai), file(dict), file(bed) from bcftools
 
   output:
   set val(name), file("${name}.SAM.vcf") into bcftools_vcf
@@ -548,6 +553,7 @@ process bcftoolsMpileup {
       --max-idepth 10000 \
       --annotate "FORMAT/AD,FORMAT/DP" \
       --fasta-ref ${fasta} \
+      --regions-file ${bed} \
       --ignore-RG \
       --no-BAQ \
       ${bam} | bcftools call -Ov -mv \
