@@ -363,7 +363,7 @@ process mergeBamAlignment {
 
 process runBamQCmapped {
     tag "$bam"
-    container 'maxulysse/sarek:latest'
+    container 'maxulysse/sarek:2.3.FIX1'
 
     input:
     set val(name), file(bam), file(index), file(intervals) from merged_bam_qc
@@ -463,7 +463,7 @@ process applyBQSR {
 
 process runBamQCrecalibrated {
     tag "$bam"
-    container 'maxulysse/sarek:latest'
+    container 'maxulysse/sarek:2.3.FIX1'
 
     input:
     set val(name), file(bam), file(index), file(intervals) from recalibrated_bams_qc
